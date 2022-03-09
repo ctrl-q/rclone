@@ -69,6 +69,14 @@ func (p *EpFF) ActionEntries(entries ...upstream.Entry) ([]upstream.Entry, error
 	return entries[:1], nil
 }
 
+func (p *EpFF) ActionAttempts(upstreams []*upstream.Fs) [][]*upstream.Fs {
+	return [][]*upstream.Fs{upstreams}
+}
+
+func (p *EpFF) ActionEntriesAttempts(entries []upstream.Entry) [][]upstream.Entry {
+	return [][]upstream.Entry{entries}
+}
+
 // Create category policy, governing the creation of files and directories
 func (p *EpFF) Create(ctx context.Context, upstreams []*upstream.Fs, path string) ([]*upstream.Fs, error) {
 	if len(upstreams) == 0 {
@@ -94,6 +102,14 @@ func (p *EpFF) CreateEntries(entries ...upstream.Entry) ([]upstream.Entry, error
 	return entries[:1], nil
 }
 
+func (p *EpFF) CreateAttempts(upstreams []*upstream.Fs) [][]*upstream.Fs {
+	return p.ActionAttempts(upstreams)
+}
+
+func (p *EpFF) CreateEntriesAttempts(entries []upstream.Entry) [][]upstream.Entry {
+	return p.ActionEntriesAttempts(entries)
+}
+
 // Search category policy, governing the access to files and directories
 func (p *EpFF) Search(ctx context.Context, upstreams []*upstream.Fs, path string) (*upstream.Fs, error) {
 	if len(upstreams) == 0 {
@@ -108,4 +124,12 @@ func (p *EpFF) SearchEntries(entries ...upstream.Entry) (upstream.Entry, error) 
 		return nil, fs.ErrorObjectNotFound
 	}
 	return entries[0], nil
+}
+
+func (p *EpFF) SearchAttempts(upstreams []*upstream.Fs) [][]*upstream.Fs {
+	return p.ActionAttempts(upstreams)
+}
+
+func (p *EpFF) SearchEntriesAttempts(entry upstream.Entry) []upstream.Entry {
+	return []upstream.Entry{entry}
 }

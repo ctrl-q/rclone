@@ -79,20 +79,27 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	// Multi-threading
 	readers, errChan := multiReader(len(entries), in)
 	errs := Errors(make([]error, len(entries)+1))
-	multithread(len(entries), func(i int) {
-		if o, ok := entries[i].(*upstream.Object); ok {
-			err := o.Update(ctx, readers[i], src, options...)
-			if err != nil {
-				errs[i] = fmt.Errorf("%s: %w", o.UpstreamFs().Name(), err)
+	attempts := o.fs.actionEntriesAttempts(entries)
+	for i, entries := range attempts {
+		multithread(len(entries), func(j int) {
+			if o, ok := entries[j].(*upstream.Object); ok {
+				err := o.Update(ctx, readers[i+j], src, options...)
+				if err != nil {
+					errs[i+j] = fmt.Errorf("%s: %w", o.UpstreamFs().Name(), err)
+				}
 				if len(entries) > 1 {
 					// Drain the input buffer to allow other uploads to continue
 					_, _ = io.Copy(io.Discard, readers[i])
 				}
+			} else {
+				errs[i+j] = fs.ErrorNotAFile
 			}
-		} else {
-			errs[i] = fs.ErrorNotAFile
+		})
+		if len(errs[i:i+len(entries)].FilterNil()) == 0 {
+			// TODO THIS SHOULD CAUSE IT TO STOP AND NOT RETURN ERRORS
+			break
 		}
-	})
+	}
 	errs[len(entries)] = <-errChan
 	return errs.Err()
 }
@@ -104,16 +111,22 @@ func (o *Object) Remove(ctx context.Context) error {
 		return err
 	}
 	errs := Errors(make([]error, len(entries)))
-	multithread(len(entries), func(i int) {
-		if o, ok := entries[i].(*upstream.Object); ok {
-			err := o.Remove(ctx)
-			if err != nil {
-				errs[i] = fmt.Errorf("%s: %w", o.UpstreamFs().Name(), err)
+	attempts := o.fs.actionEntriesAttempts(entries)
+	for i, entries := range attempts {
+		multithread(len(entries), func(j int) {
+			if o, ok := entries[j].(*upstream.Object); ok {
+				err := o.Remove(ctx)
+				if err != nil {
+					errs[i+j] = fmt.Errorf("%s: %w", o.UpstreamFs().Name(), err)
+				}
+			} else {
+				errs[i+j] = fs.ErrorNotAFile
 			}
-		} else {
-			errs[i] = fs.ErrorNotAFile
+		})
+		if len(errs[i:i+len(entries)].FilterNil()) == 0 {
+			break
 		}
-	})
+	}
 	return errs.Err()
 }
 
@@ -125,16 +138,22 @@ func (o *Object) SetModTime(ctx context.Context, t time.Time) error {
 	}
 	var wg sync.WaitGroup
 	errs := Errors(make([]error, len(entries)))
-	multithread(len(entries), func(i int) {
-		if o, ok := entries[i].(*upstream.Object); ok {
-			err := o.SetModTime(ctx, t)
-			if err != nil {
-				errs[i] = fmt.Errorf("%s: %w", o.UpstreamFs().Name(), err)
+	attempts := o.fs.actionEntriesAttempts(entries)
+	for i, entries := range attempts {
+		multithread(len(entries), func(j int) {
+			if o, ok := entries[j].(*upstream.Object); ok {
+				err := o.SetModTime(ctx, t)
+				if err != nil {
+					errs[i+j] = fmt.Errorf("%s: %w", o.UpstreamFs().Name(), err)
+				}
+			} else {
+				errs[i+j] = fs.ErrorNotAFile
 			}
-		} else {
-			errs[i] = fs.ErrorNotAFile
+		})
+		if len(errs[i:i+len(entries)].FilterNil()) == 0 {
+			break
 		}
-	})
+	}
 	wg.Wait()
 	return errs.Err()
 }

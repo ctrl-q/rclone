@@ -34,6 +34,24 @@ type Policy interface {
 
 	// SearchEntries is SEARCH category policy but receiving a set of candidate entries
 	SearchEntries(entries ...upstream.Entry) (upstream.Entry, error)
+
+	// ActionAttempts splits ACTION policy upstreams into sequential attempts
+	ActionAttempts(upstreams []*upstream.Fs) [][]*upstream.Fs
+
+	// CreateAttempts splits CREATE policy upstreams into sequential attempts
+	CreateAttempts(upstreams []*upstream.Fs) [][]*upstream.Fs
+
+	// SearchAttempts splits SEARCH policy upstreams into sequential attempts
+	SearchAttempts(upstreams []*upstream.Fs) [][]*upstream.Fs
+
+	// ActionEntriesAttempts is ActionAttempts but receiving a set of candidate entries
+	ActionEntriesAttempts(entries []upstream.Entry) [][]upstream.Entry
+
+	// CreateEntriesAttempts is CreateAttempts but receiving a set of candidate entries
+	CreateEntriesAttempts(entries []upstream.Entry) [][]upstream.Entry
+
+	// SearchEntriesAttempts is SearchAttempts but receiving a set of candidate entries
+	SearchEntriesAttempts(entry upstream.Entry) []upstream.Entry
 }
 
 func registerPolicy(name string, p Policy) {

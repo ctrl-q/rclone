@@ -126,12 +126,18 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 		return err
 	}
 	errs := Errors(make([]error, len(upstreams)))
-	multithread(len(upstreams), func(i int) {
-		err := upstreams[i].Rmdir(ctx, dir)
-		if err != nil {
-			errs[i] = fmt.Errorf("%s: %w", upstreams[i].Name(), err)
+	attempts := f.actionAttempts(upstreams)
+	for i, upstreams := range attempts {
+		multithread(len(upstreams), func(j int) {
+			err := upstreams[j].Rmdir(ctx, dir)
+			if err != nil {
+				errs[i+j] = fmt.Errorf("%s: %w", upstreams[j].Name(), err)
+			}
+		})
+		if len(errs[i:i+len(upstreams)].FilterNil()) == 0 {
+			break
 		}
-	})
+	}
 	return errs.Err()
 }
 
@@ -158,12 +164,18 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 		return err
 	}
 	errs := Errors(make([]error, len(upstreams)))
-	multithread(len(upstreams), func(i int) {
-		err := upstreams[i].Mkdir(ctx, dir)
-		if err != nil {
-			errs[i] = fmt.Errorf("%s: %w", upstreams[i].Name(), err)
+	attempts := f.createAttempts(upstreams)
+	for i, upstreams := range attempts {
+		multithread(len(upstreams), func(j int) {
+			err := upstreams[j].Mkdir(ctx, dir)
+			if err != nil {
+				errs[i+j] = fmt.Errorf("%s: %w", upstreams[j].Name(), err)
+			}
+		})
+		if len(errs[i:i+len(upstreams)].FilterNil()) == 0 {
+			break
 		}
-	})
+	}
 	return errs.Err()
 }
 
@@ -183,16 +195,22 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 	if err != nil {
 		return err
 	}
+	attempts := f.actionAttempts(upstreams)
 	errs := Errors(make([]error, len(upstreams)))
-	multithread(len(upstreams), func(i int) {
-		err := upstreams[i].Features().Purge(ctx, dir)
-		if errors.Is(err, fs.ErrorDirNotFound) {
-			err = nil
+	for i, upstreams := range attempts {
+		multithread(len(upstreams), func(j int) {
+			err := upstreams[j].Features().Purge(ctx, dir)
+			if errors.Is(err, fs.ErrorDirNotFound) {
+				err = nil
+			}
+			if err != nil {
+				errs[i+j] = fmt.Errorf("%s: %w", upstreams[j].Name(), err)
+			}
+		})
+		if len(errs[i:i+len(upstreams)].FilterNil()) == 0 {
+			break
 		}
-		if err != nil {
-			errs[i] = fmt.Errorf("%s: %w", upstreams[i].Name(), err)
-		}
-	})
+	}
 	return errs.Err()
 }
 
@@ -262,49 +280,55 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	}
 	objs := make([]*upstream.Object, len(entries))
 	errs := Errors(make([]error, len(entries)))
-	multithread(len(entries), func(i int) {
-		su := entries[i].UpstreamFs()
-		o, ok := entries[i].(*upstream.Object)
-		if !ok {
-			errs[i] = fmt.Errorf("%s: %w", su.Name(), fs.ErrorNotAFile)
-			return
-		}
-		var du *upstream.Fs
-		for _, u := range f.upstreams {
-			if operations.Same(u.RootFs, su.RootFs) {
-				du = u
-			}
-		}
-		if du == nil {
-			errs[i] = fmt.Errorf("%s: %s: %w", su.Name(), remote, fs.ErrorCantMove)
-			return
-		}
-		srcObj := o.UnWrap()
-		duFeatures := du.Features()
-		do := duFeatures.Move
-		if duFeatures.Move == nil {
-			do = duFeatures.Copy
-		}
-		// Do the Move or Copy
-		dstObj, err := do(ctx, srcObj, remote)
-		if err != nil {
-			errs[i] = fmt.Errorf("%s: %w", su.Name(), err)
-			return
-		}
-		if dstObj == nil {
-			errs[i] = fmt.Errorf("%s: destination object not found", su.Name())
-			return
-		}
-		objs[i] = du.WrapObject(dstObj)
-		// Delete the source object if Copy
-		if duFeatures.Move == nil {
-			err = srcObj.Remove(ctx)
-			if err != nil {
-				errs[i] = fmt.Errorf("%s: %w", su.Name(), err)
+	attempts := f.actionEntriesAttempts(entries)
+	for i, entries := range attempts {
+		multithread(len(entries), func(j int) {
+			su := entries[j].UpstreamFs()
+			o, ok := entries[j].(*upstream.Object)
+			if !ok {
+				errs[i+j] = fmt.Errorf("%s: %w", su.Name(), fs.ErrorNotAFile)
 				return
 			}
+			var du *upstream.Fs
+			for _, u := range f.upstreams { // NOTE: WHY USE F.UPSTREAMS HERE
+				if operations.Same(u.RootFs, su.RootFs) {
+					du = u
+				}
+			}
+			if du == nil {
+				errs[i+j] = fmt.Errorf("%s: %s: %w", su.Name(), remote, fs.ErrorCantMove)
+				return
+			}
+			srcObj := o.UnWrap()
+			duFeatures := du.Features()
+			do := duFeatures.Move
+			if duFeatures.Move == nil {
+				do = duFeatures.Copy
+			}
+			// Do the Move or Copy
+			dstObj, err := do(ctx, srcObj, remote)
+			if err != nil {
+				errs[i+j] = fmt.Errorf("%s: %w", su.Name(), err)
+				return
+			}
+			if dstObj == nil {
+				errs[i+j] = fmt.Errorf("%s: destination object not found", su.Name())
+				return
+			}
+			objs[i+j] = du.WrapObject(dstObj)
+			// Delete the source object if Copy
+			if duFeatures.Move == nil {
+				err = srcObj.Remove(ctx)
+				if err != nil {
+					errs[i+j] = fmt.Errorf("%s: %w", su.Name(), err)
+					return
+				}
+			}
+		})
+		if len(errs[i:i+len(entries)].FilterNil()) == 0 {
+			break
 		}
-	})
+	}
 	var en []upstream.Entry
 	for _, o := range objs {
 		if o != nil {
@@ -342,23 +366,31 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 		}
 	}
 	errs := Errors(make([]error, len(upstreams)))
-	multithread(len(upstreams), func(i int) {
-		su := upstreams[i]
-		var du *upstream.Fs
-		for _, u := range f.upstreams {
-			if operations.Same(u.RootFs, su.RootFs) {
-				du = u
+	attempts := f.actionAttempts(upstreams)
+	for i, upstreams := range attempts {
+		multithread(len(upstreams), func(j int) {
+			su := upstreams[j]
+			var du *upstream.Fs
+			for _, u := range f.upstreams { // NOTE: WHY USE F.UPSTREAMS HERE INSTEAD OF JUST UPSTREAMS?
+				if operations.Same(u.RootFs, su.RootFs) {
+					du = u
+				}
 			}
+			if du == nil {
+				errs[i+j] = fmt.Errorf("%s: %s: %w", su.Name(), su.Root(), fs.ErrorCantDirMove)
+				return
+			}
+			err := du.Features().DirMove(ctx, su.Fs, srcRemote, dstRemote)
+			if err != nil {
+				errs[i+j] = fmt.Errorf("%s: %w", du.Name()+":"+du.Root(), err)
+			}
+		})
+
+		if len(errs[i:i+len(upstreams)].FilterNil()) == 0 {
+			break
 		}
-		if du == nil {
-			errs[i] = fmt.Errorf("%s: %s: %w", su.Name(), su.Root(), fs.ErrorCantDirMove)
-			return
-		}
-		err := du.Features().DirMove(ctx, su.Fs, srcRemote, dstRemote)
-		if err != nil {
-			errs[i] = fmt.Errorf("%s: %w", du.Name()+":"+du.Root(), err)
-		}
-	})
+	}
+
 	errs = errs.FilterNil()
 	if len(errs) == 0 {
 		return nil
@@ -475,25 +507,32 @@ func (f *Fs) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, stream bo
 	readers, errChan := multiReader(len(upstreams), in)
 	errs := Errors(make([]error, len(upstreams)+1))
 	objs := make([]upstream.Entry, len(upstreams))
-	multithread(len(upstreams), func(i int) {
-		u := upstreams[i]
-		var o fs.Object
-		var err error
-		if stream {
-			o, err = u.Features().PutStream(ctx, readers[i], src, options...)
-		} else {
-			o, err = u.Put(ctx, readers[i], src, options...)
-		}
-		if err != nil {
-			errs[i] = fmt.Errorf("%s: %w", u.Name(), err)
-			if len(upstreams) > 1 {
-				// Drain the input buffer to allow other uploads to continue
-				_, _ = io.Copy(io.Discard, readers[i])
+
+	attempts := f.createAttempts(upstreams)
+	for i, upstreams := range attempts {
+		multithread(len(upstreams), func(j int) {
+			u := upstreams[j]
+			var o fs.Object
+			var err error
+			if stream {
+				o, err = u.Features().PutStream(ctx, readers[i+j], src, options...)
+			} else {
+				o, err = u.Put(ctx, readers[i+j], src, options...)
 			}
-			return
+			if err != nil {
+				errs[i+j] = fmt.Errorf("%s: %w", u.Name(), err)
+				if len(upstreams) > 1 {
+					// Drain the input buffer to allow other uploads to continue
+					_, _ = io.Copy(io.Discard, readers[i])
+				}
+				return
+			}
+			objs[i+j] = u.WrapObject(o)
+		})
+		if len(errs[i:i+len(upstreams)].FilterNil()) == 0 {
+			break
 		}
-		objs[i] = u.WrapObject(o)
-	})
+	}
 	errs[len(upstreams)] = <-errChan
 	err = errs.Err()
 	if err != nil {
@@ -740,6 +779,14 @@ func (f *Fs) actionEntries(entries ...upstream.Entry) ([]upstream.Entry, error) 
 	return f.actionPolicy.ActionEntries(entries...)
 }
 
+func (f *Fs) actionAttempts(upstreams []*upstream.Fs) [][]*upstream.Fs {
+	return f.actionPolicy.ActionAttempts(upstreams)
+}
+
+func (f *Fs) actionEntriesAttempts(entries []upstream.Entry) [][]upstream.Entry {
+	return f.actionPolicy.ActionEntriesAttempts(entries)
+}
+
 func (f *Fs) create(ctx context.Context, path string) ([]*upstream.Fs, error) {
 	return f.createPolicy.Create(ctx, f.upstreams, path)
 }
@@ -748,12 +795,28 @@ func (f *Fs) createEntries(entries ...upstream.Entry) ([]upstream.Entry, error) 
 	return f.createPolicy.CreateEntries(entries...)
 }
 
+func (f *Fs) createAttempts(upstreams []*upstream.Fs) [][]*upstream.Fs {
+	return f.createPolicy.CreateAttempts(upstreams)
+}
+
+func (f *Fs) createEntriesAttempts(entries []upstream.Entry) [][]upstream.Entry {
+	return f.createPolicy.CreateEntriesAttempts(entries)
+}
+
 func (f *Fs) search(ctx context.Context, path string) (*upstream.Fs, error) {
 	return f.searchPolicy.Search(ctx, f.upstreams, path)
 }
 
 func (f *Fs) searchEntries(entries ...upstream.Entry) (upstream.Entry, error) {
 	return f.searchPolicy.SearchEntries(entries...)
+}
+
+func (f *Fs) searchAttempts(upstreams []*upstream.Fs) [][]*upstream.Fs {
+	return f.searchPolicy.SearchAttempts(upstreams)
+}
+
+func (f *Fs) searchEntriesAttempts(entry upstream.Entry) []upstream.Entry {
+	return f.searchPolicy.SearchEntriesAttempts(entry)
 }
 
 func (f *Fs) mergeDirEntries(entriesList [][]upstream.Entry) (fs.DirEntries, error) {
